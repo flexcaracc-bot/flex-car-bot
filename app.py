@@ -3,52 +3,53 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# جلب البيانات - تأكد أن الأسماء تطابق Render تماماً
+# جلب البيانات من Render
 ACCESS_TOKEN = os.environ.get('ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY') # تم تصحيح الاسم هنا
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
+
+@app.route('/')
+def home():
+    return "السيرفر شغال!", 200
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
+    # خطوة التحقق الأولية لميتـا
     if request.method == 'GET':
-        if request.args.get("hub.verify_token") == VERIFY_TOKEN:
-            return request.args.get("hub.challenge")
-        return 'Error', 403
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
+        if mode == 'subscribe' and token == VERIFY_TOKEN:
+            print("--- تم التحقق من الـ Webhook بنجاح!")
+            return challenge, 200
+        return 'خطأ في التوكن', 403
 
+    # استقبال الرسائل
     data = request.get_json()
-    print("--- استلمت بيانات من ميتـا: " + json.dumps(data)) # طباعة البيانات كاملة للتحقق
+    print("--- [وصلت إشارة من ميتـا]: " + json.dumps(data)) # هذا السطر سيحسم الشك
 
     try:
-        # التأكد من أن البيانات تحتوي على رسالة
-        if data.get('entry') and data['entry'][0].get('changes') and data['entry'][0]['changes'][0]['value'].get('messages'):
-            message = data['entry'][0]['changes'][0]['value']['messages'][0]
-            if message.get('type') == 'text':
-                text = message['text']['body']
-                sender = message['from']
-                
-                print(f"--- جاري معالجة رسالة من {sender}: {text}")
+        # استخراج الرسالة
+        val = data['entry'][0]['changes'][0]['value']
+        if 'messages' in val:
+            msg = val['messages'][0]
+            sender = msg['from']
+            text = msg['text']['body']
+            
+            # استدعاء Gemini
+            ai_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            ai_res = requests.post(ai_url, json={"contents": [{"parts": [{"text": f"أجب باختصار: {text}"}]}]})
+            answer = ai_res.json()['candidates'][0]['content']['parts'][0]['text']
 
-                # استدعاء Gemini
-                ai_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-                ai_res = requests.post(ai_url, json={"contents": [{"parts": [{"text": f"أنت بائع في Flex Car. أجب باختصار: {text}"}]}]})
-                
-                if ai_res.status_code == 200:
-                    answer = ai_res.json()['candidates'][0]['content']['parts'][0]['text']
-                    print(f"--- رد Gemini: {answer}")
+            # الرد
+            wa_url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+            headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+            payload = {"messaging_product": "whatsapp", "to": sender, "type": "text", "text": {"body": answer}}
+            requests.post(wa_url, json=payload, headers=headers)
+            print(f"--- تم إرسال الرد إلى {sender}")
 
-                    # إرسال للواتساب
-                    wa_url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-                    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-                    payload = {"messaging_product": "whatsapp", "to": sender, "type": "text", "text": {"body": answer}}
-                    r = requests.post(wa_url, json=payload, headers=headers)
-                    print(f"--- حالة إرسال واتساب: {r.status_code}, {r.text}")
-                else:
-                    print(f"--- خطأ في Gemini API: {ai_res.text}")
     except Exception as e:
-        print(f"--- خطأ داخلي في الكود: {str(e)}")
-        
-    return jsonify({"status": "ok"}), 200
+        print(f"--- عطل أثناء المعالجة: {str(e)}")
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    return jsonify({"status": "ok"}), 200
