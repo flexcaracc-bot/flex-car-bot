@@ -33,7 +33,7 @@ def webhook():
             text = msg['text']['body']
             
             # تحديث الرابط إلى النسخة المستقرة v1
-            ai_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            ai_url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
             ai_res = requests.post(ai_url, json={"contents": [{"parts": [{"text": f"أنت مساعد في شركة Flex Car، أجب باختصار: {text}"}]}]})
             ai_data = ai_res.json()
 
