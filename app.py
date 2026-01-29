@@ -1,75 +1,84 @@
-import express from "express";
-import fetch from "node-fetch";
+# -*- coding: utf-8 -*-
+import os
+import requests
+import json
+from flask import Flask, request, jsonify
 
-const app = express();
-app.use(express.json());
+app = Flask(__name__)
 
-// Verification
-app.get("/webhook", (req, res) => {
-  if (req.query["hub.verify_token"] === process.env.VERIFY_TOKEN) {
-    return res.send(req.query["hub.challenge"]);
-  }
-  res.sendStatus(403);
-});
+ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
+PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 
-// Messages
-app.post("/webhook", async (req, res) => {
-  try {
-    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!msg || !msg.text) return res.sendStatus(200);
+@app.route("/")
+def home():
+    return "السيرفر شغال ✔", 200
 
-    const from = msg.from;
-    const userText = msg.text.body;
 
-    // Gemini Pro (v1beta)
-    const gRes = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=" +
-        process.env.GEMINI_API_KEY,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text:
-`أنت مساعد بيع ذكي. جاوب باختصار شديد وبأسلوب طبيعي.
-اطلب: المنتج، المدينة، نوع السيارة.
-اقترح خدمة إضافية واحدة فقط.
-اللغة حسب رسالة المستخدم.
-النص: ${userText}`
-            }]
-          }]
-        })
-      }
-    );
+@app.route("/webhook", methods=["GET", "POST"])
+def webhook():
 
-    const gData = await gRes.json();
-    const reply =
-      gData.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "مرحبا! شنو الخدمة اللي باغي؟ المدينة ونوع السيارة لو سمحت.";
+    # 1️⃣ Webhook Verification
+    if request.method == "GET":
+        if (
+            request.args.get("hub.mode") == "subscribe"
+            and request.args.get("hub.verify_token") == VERIFY_TOKEN
+        ):
+            return request.args.get("hub.challenge"), 200
+        return "Forbidden", 403
 
-    // Send WhatsApp reply
-    await fetch(
-      `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: from,
-          text: { body: reply }
-        })
-      }
-    );
+    # 2️⃣ Incoming message
+    data = request.get_json()
+    print("INCOMING:", json.dumps(data, ensure_ascii=False))
 
-    res.sendStatus(200);
-  } catch (e) {
-    console.error(e);
-    res.sendStatus(200);
-  }
-});
+    try:
+        value = data["entry"][0]["changes"][0]["value"]
 
-app.listen(3000);
+        if "messages" not in value:
+            return jsonify({"status": "ignored"}), 200
+
+        msg = value["messages"][0]
+        sender = msg["from"]
+        user_text = msg["text"]["body"]
+
+        # 3️⃣ Gemini Pro request (v1beta)
+        prompt = f"""
+أنت مساعد بيع ذكي لشركة Flex Car.
+جاوب بجملة أو جملتين فقط وبأسلوب طبيعي.
+اطلب:
+- المنتج
+- المدينة
+- نوع السيارة
+واقترح خدمة إضافية واحدة فقط.
+اللغة حسب كلام المستخدم.
+
+رسالة المستخدم:
+{user_text}
+"""
+
+        gemini_url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY
+        )
+
+        gemini_res = requests.post(
+            gemini_url,
+            json={
+                "contents": [
+                    {
+                        "parts": [{"text": prompt}]
+                    }
+                ]
+            },
+            timeout=20
+        )
+
+        gemini_data = gemini_res.json()
+
+        if "candidates" in gemini_data:
+            reply = gemini_data["candidates"][0]["content"]["parts"][0]["text"]
+        else:
+            reply = "مرحبا! شنو الخدمة اللي باغي؟ المدينة ونوع السيارة لو سمحت."
+
+        # 4️⃣ Se
